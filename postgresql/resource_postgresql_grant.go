@@ -167,6 +167,7 @@ func resourcePostgreSQLGrantImport(ctx context.Context, d *schema.ResourceData, 
 	}
 	d.Set("with_grant_option", withGrantOption)
 
+	d.SetId(generateGrantID(d)) // Import ID is the same as the generated ID for backwards compatibility
 	return []*schema.ResourceData{d}, nil
 }
 
