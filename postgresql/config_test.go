@@ -122,7 +122,7 @@ func TestConnectWithRetrySucceedsAfterTransientFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connectWithRetry() returned unexpected error: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	if got := drv.attempts.Load(); got != 3 {
 		t.Errorf("expected 3 connection attempts (2 failures + 1 success), got %d", got)
