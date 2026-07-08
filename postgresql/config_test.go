@@ -138,7 +138,7 @@ func TestConnectWithRetryGivesUpAfterMaxConnRetries(t *testing.T) {
 		t.Fatal("connectWithRetry() expected an error, got nil")
 	}
 
-	if got := drv.attempts.Load(); got != 3 {
-		t.Errorf("expected exactly 3 connection attempts (MaxConnRetries), got %d", got)
+	if got := drv.attempts.Load(); got != 4 {
+		t.Errorf("expected exactly 4 connection attempts (1 initial + MaxConnRetries), got %d", got)
 	}
 }

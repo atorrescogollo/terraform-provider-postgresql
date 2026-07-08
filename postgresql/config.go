@@ -374,10 +374,10 @@ func (c *Client) connectWithRetry(ctx context.Context, postgresDriverName, dsn s
 			db = nil
 		}
 
-		retryCount++
 		if !isRetryableConnectionError(err) || retryCount >= c.config.MaxConnRetries {
 			return retry.NonRetryableError(err)
 		}
+		retryCount++
 		return retry.RetryableError(err)
 	})
 	if retryError != nil {

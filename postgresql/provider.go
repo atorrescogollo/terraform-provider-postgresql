@@ -215,7 +215,7 @@ func Provider() *schema.Provider {
 				Optional:     true,
 				Default:      defaultProviderConnMaxLifetimeSeconds,
 				Description:  "Maximum lifetime of a connection, in seconds. Zero means unlimited.",
-				ValidateFunc: validation.IntAtLeast(-1),
+				ValidateFunc: validation.IntAtLeast(0),
 			},
 			"expected_version": {
 				Type:         schema.TypeString,
