@@ -3,6 +3,7 @@ package postgresql
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -13,7 +14,7 @@ import (
 
 	"github.com/blang/semver"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/retry"
-	_ "github.com/lib/pq" // PostgreSQL db
+	"github.com/lib/pq"
 	"gocloud.dev/gcp"
 	"gocloud.dev/gcp/cloudsql"
 	"gocloud.dev/postgres"
@@ -289,72 +290,117 @@ func (c *Config) getDatabaseUsername() string {
 // Callers must return their database resources. Use of QueryRow() or Exec() is encouraged.
 // Query() must have their rows.Close()'ed.
 func (c *Client) Connect() (*DBConnection, error) {
-	dbRegistryLock.Lock()
-	defer dbRegistryLock.Unlock()
 	ctx := context.Background()
-
 	dsn := c.config.connStr(c.databaseName)
+
+	dbRegistryLock.Lock()
 	conn, found := dbRegistry[dsn]
-	if !found {
-
-		var db *sql.DB
-		var err error
-		retryCount := 0
-
-		connectRetryTimeout := time.Duration(c.config.ConnectionRetryTimeoutSeconds) * time.Second
-		retryError := retry.RetryContext(ctx, connectRetryTimeout, func() *retry.RetryError {
-			if c.config.Scheme == "postgres" {
-				db, err = sql.Open(proxyDriverName, dsn)
-			} else if c.config.Scheme == "gcppostgres" && c.config.GCPIAMImpersonateServiceAccount != "" {
-				db, err = openImpersonatedGCPDBConnection(ctx, dsn, c.config.GCPIAMImpersonateServiceAccount)
-			} else {
-				db, err = postgres.Open(ctx, dsn)
-			}
-			if err == nil {
-				err = db.PingContext(ctx)
-			}
-
-			retryCount++
-			if err != nil {
-				if retryCount >= c.config.MaxConnRetries {
-					return retry.NonRetryableError(err)
-				}
-				return retry.RetryableError(err)
-			}
-			return nil
-		})
-		if retryError != nil {
-			errString := strings.Replace(retryError.Error(), c.config.Password, "XXXX", 2)
-			return nil, fmt.Errorf("error connecting to PostgreSQL server %s (scheme: %s): %s", c.config.Host, c.config.Scheme, errString)
-		}
-
-		// We don't want to retain connection
-		// So when we connect on a specific database which might be managed by terraform,
-		// we don't keep opened connection in case of the db has to be dropped in the plan.
-		db.SetMaxIdleConns(0)
-		db.SetMaxOpenConns(c.config.MaxConns)
-		db.SetConnMaxLifetime(time.Duration(c.config.ConnMaxLifetimeSeconds) * time.Second)
-
-		defaultVersion, _ := semver.Parse(defaultExpectedPostgreSQLVersion)
-		version := &c.config.ExpectedVersion
-		if defaultVersion.Equals(c.config.ExpectedVersion) {
-			// Version hint not set by user, need to fingerprint
-			version, err = fingerprintCapabilities(db)
-			if err != nil {
-				_ = db.Close()
-				return nil, fmt.Errorf("error detecting capabilities: %w", err)
-			}
-		}
-
-		conn = &DBConnection{
-			db,
-			c,
-			*version,
-		}
-		dbRegistry[dsn] = conn
+	dbRegistryLock.Unlock()
+	if found {
+		return conn, nil
 	}
 
+	// Dialing and retrying happen outside the lock so a slow/flaky connection
+	// to one DSN doesn't stall Connect() calls for other DSNs.
+	db, err := c.connectWithRetry(ctx, proxyDriverName, dsn)
+	if err != nil {
+		return nil, err
+	}
+
+	// We don't want to retain connection
+	// So when we connect on a specific database which might be managed by terraform,
+	// we don't keep opened connection in case of the db has to be dropped in the plan.
+	db.SetMaxIdleConns(0)
+	db.SetMaxOpenConns(c.config.MaxConns)
+	db.SetConnMaxLifetime(time.Duration(c.config.ConnMaxLifetimeSeconds) * time.Second)
+
+	defaultVersion, _ := semver.Parse(defaultExpectedPostgreSQLVersion)
+	version := &c.config.ExpectedVersion
+	if defaultVersion.Equals(c.config.ExpectedVersion) {
+		// Version hint not set by user, need to fingerprint
+		version, err = fingerprintCapabilities(db)
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("error detecting capabilities: %w", err)
+		}
+	}
+
+	conn = &DBConnection{
+		db,
+		c,
+		*version,
+	}
+
+	dbRegistryLock.Lock()
+	defer dbRegistryLock.Unlock()
+	if existing, found := dbRegistry[dsn]; found {
+		// Another goroutine won the race and already published a connection
+		// for this DSN; keep that one and discard ours.
+		_ = db.Close()
+		return existing, nil
+	}
+	dbRegistry[dsn] = conn
 	return conn, nil
+}
+
+// connectWithRetry opens a connection to dsn, retrying transient failures up
+// to c.config.MaxConnRetries times or until c.config.ConnectionRetryTimeoutSeconds
+// elapses, whichever comes first. postgresDriverName is the database/sql
+// driver used for the "postgres" scheme (overridable by tests).
+func (c *Client) connectWithRetry(ctx context.Context, postgresDriverName, dsn string) (*sql.DB, error) {
+	var db *sql.DB
+	var err error
+	retryCount := 0
+
+	connectRetryTimeout := time.Duration(c.config.ConnectionRetryTimeoutSeconds) * time.Second
+	retryError := retry.RetryContext(ctx, connectRetryTimeout, func() *retry.RetryError {
+		if c.config.Scheme == "postgres" {
+			db, err = sql.Open(postgresDriverName, dsn)
+		} else if c.config.Scheme == "gcppostgres" && c.config.GCPIAMImpersonateServiceAccount != "" {
+			db, err = openImpersonatedGCPDBConnection(ctx, dsn, c.config.GCPIAMImpersonateServiceAccount)
+		} else {
+			db, err = postgres.Open(ctx, dsn)
+		}
+		if err == nil {
+			err = db.PingContext(ctx)
+		}
+
+		if err == nil {
+			return nil
+		}
+
+		if db != nil {
+			_ = db.Close()
+			db = nil
+		}
+
+		retryCount++
+		if !isRetryableConnectionError(err) || retryCount >= c.config.MaxConnRetries {
+			return retry.NonRetryableError(err)
+		}
+		return retry.RetryableError(err)
+	})
+	if retryError != nil {
+		errString := strings.Replace(retryError.Error(), c.config.Password, "XXXX", 2)
+		return nil, fmt.Errorf("error connecting to PostgreSQL server %s (scheme: %s): %s", c.config.Host, c.config.Scheme, errString)
+	}
+
+	return db, nil
+}
+
+// isRetryableConnectionError reports whether a connection failure is likely
+// transient (network blips, server not ready yet) as opposed to a
+// configuration error (bad credentials, unknown database) that will not be
+// fixed by retrying.
+func isRetryableConnectionError(err error) bool {
+	if pqErr, ok := errors.AsType[*pq.Error](err); ok {
+		switch pqErr.Code.Class() {
+		case "28", // Invalid Authorization Specification
+			"3D": // Invalid Catalog Name
+			return false
+		}
+	}
+	return true
 }
 
 // fingerprintCapabilities queries PostgreSQL to populate a local catalog of

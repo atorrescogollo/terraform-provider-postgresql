@@ -23,7 +23,7 @@ import (
 
 const (
 	defaultProviderMaxOpenConnections            = 20
-	defaultProviderConnMaxLifetimeSeconds        = 300
+	defaultProviderConnMaxLifetimeSeconds        = 0 // unlimited
 	defaultProviderMaxConnRetries                = 5
 	defaultProviderConnectionRetryTimeoutSeconds = 5
 	defaultExpectedPostgreSQLVersion             = "9.0.0"
@@ -193,7 +193,7 @@ func Provider() *schema.Provider {
 				Type:         schema.TypeInt,
 				Optional:     true,
 				Default:      defaultProviderMaxConnRetries,
-				Description:  "Maximum number of connection retries.",
+				Description:  "Maximum number of connection retries. Zero means no retries.",
 				ValidateFunc: validation.IntAtLeast(0),
 			},
 			"connection_retry_timeout_seconds": {
