@@ -24,7 +24,7 @@ import (
 const (
 	defaultProviderMaxOpenConnections            = 20
 	defaultProviderConnMaxLifetimeSeconds        = 0 // unlimited
-	defaultProviderMaxConnRetries                = 5
+	defaultProviderMaxConnRetries                = 0
 	defaultProviderConnectionRetryTimeoutSeconds = 5
 	defaultExpectedPostgreSQLVersion             = "9.0.0"
 )
