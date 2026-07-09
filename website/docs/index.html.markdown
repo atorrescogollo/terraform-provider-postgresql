@@ -171,7 +171,7 @@ The following arguments are supported:
 * `connect_timeout` - (Optional) Maximum wait for connection, in seconds. The
   default is `180s`.  Zero or not specified means wait indefinitely.
 * `max_conn_retries` - (Optional) Maximum number of connection retries. Zero
-  means no retries. The default is `5`.
+  means no retries. The default is `0`.
 * `connection_retry_timeout_seconds` - (Optional) Maximum total wait, in
   seconds, across all connection retries. The default is `5`.
 * `max_connections` - (Optional) Set the maximum number of open connections to
